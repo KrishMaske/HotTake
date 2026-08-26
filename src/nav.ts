@@ -1,9 +1,11 @@
 /**
  * Navigation Config
  *
- * Add one entry per nav item. Routes are handled by generouted
- * (file-based routing in src/pages/), this just controls what
- * appears in the navigation bar.
+ * HotTake's primary navigation is the bottom tab bar in
+ * src/components/Navigation.tsx (TabBar), which is defined against routes
+ * directly. This list is kept for the scaffold's role-filtering contract and
+ * for any future top-bar links; leaving it empty means the top bar shows only
+ * the wordmark and the account menu.
  */
 
 import type { Role } from './constants'
@@ -15,10 +17,4 @@ export interface NavItem {
   devOnly?: boolean
 }
 
-export const nav: NavItem[] = [
-  { path: '/home', label: 'Home' },
-  { path: '/settings', label: 'Settings' },
-  // The /api-status debug page still exists — add
-  // `{ path: '/api-status', label: 'API Status', devOnly: true }` to surface it.
-  // ── Features add nav items below this line ──
-]
+export const nav: NavItem[] = []

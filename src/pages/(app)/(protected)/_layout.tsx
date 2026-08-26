@@ -1,51 +1,72 @@
 /**
  * Gated routes. Any file under src/pages/(app)/(protected)/ requires sign-in.
- * The `(protected)` folder is a Generouted route group — parentheses mean
- * it doesn't appear in the URL. For a dynamic page that does NOT require
- * sign-in, put it directly under src/pages/(app)/; for a static page, put it
- * at the top level of src/pages/.
+ * `(protected)` is a Generouted route group, so it doesn't appear in the URL.
  *
- * Children may call data hooks like `useUser()` safely because the parent
- * (app)/_layout.tsx mounts <RecordProvider> above this layout.
- *
- * The `fallback` keeps signed-out visitors inside the app's own chrome
- * (without it, AuthGate shows the SDK's full-screen, non-dismissible
- * overlay). The sign-in overlay opens on demand and can be dismissed.
+ * On top of sign-in this layout adds HotTake's second gate: you need a profile
+ * before you can see anyone else's. A signed-in user without one is sent to
+ * /onboarding. That is a routing convenience, not a security control — the
+ * real boundary is that `profiles` denies reads to non-members and the swipe
+ * action refuses targets that have no profile row.
  */
 
 import { useState } from 'react'
-import { Link, Outlet } from 'react-router-dom'
+import { Link, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { AuthGate, AuthOverlay } from 'deepspace'
-import { Button } from '@/components/ui'
+import { Flame } from 'lucide-react'
+import { useMyProfile } from '../../../lib/use-hottake'
 
 export default function ProtectedLayout() {
   return (
     <AuthGate fallback={<SignedOutPanel />}>
-      <Outlet />
+      <ProfileGate />
     </AuthGate>
   )
+}
+
+function ProfileGate() {
+  const { profile, loading } = useMyProfile()
+  const location = useLocation()
+  const onOnboarding = location.pathname.startsWith('/onboarding')
+
+  // Hold the frame rather than flashing onboarding at someone who has a
+  // profile the query hasn't returned yet.
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Flame className="h-6 w-6 animate-pulse text-primary" aria-hidden />
+        <span className="sr-only">Loading</span>
+      </div>
+    )
+  }
+
+  if (!profile && !onOnboarding) return <Navigate to="/onboarding" replace />
+  if (profile && onOnboarding) return <Navigate to="/discover" replace />
+
+  return <Outlet />
 }
 
 function SignedOutPanel() {
   const [showAuthModal, setShowAuthModal] = useState(false)
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center px-6 py-20">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8 text-center">
-        <h1 className="text-lg font-semibold text-foreground">Sign in to continue</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This page is only available to signed-in users.
-        </p>
-        <Button className="mt-6 w-full" onClick={() => setShowAuthModal(true)}>
-          Sign in
-        </Button>
-        <Link
-          to="/"
-          className="mt-4 inline-block text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-        >
-          Back to home
-        </Link>
-      </div>
+    <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+      <Flame className="mb-5 h-8 w-8 text-primary" aria-hidden />
+      <h1 className="text-xl font-bold text-foreground">Sign in to start arguing</h1>
+      <p className="mt-2 max-w-xs text-sm text-muted-foreground">
+        You need an account to see who else has opinions worth defending.
+      </p>
+      <button
+        onClick={() => setShowAuthModal(true)}
+        className="mt-7 w-full max-w-xs rounded-full bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+      >
+        Sign in
+      </button>
+      <Link
+        to="/"
+        className="mt-4 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+      >
+        Back to home
+      </Link>
 
       {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
     </div>

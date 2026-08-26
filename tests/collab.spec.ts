@@ -20,9 +20,9 @@ import { test, expect } from 'deepspace/testing'
 test('each browser renders its own signed-in account', async ({ users }) => {
   const [a, b] = await users(2)
 
-  // /home is dynamic (under src/pages/(app)/), so it mounts the nav shell;
+  // /discover is dynamic (under src/pages/(app)/), so it mounts the nav shell;
   // '/' is the static landing and has no navigation.
-  await Promise.all([a.page.goto('/home'), b.page.goto('/home')])
+  await Promise.all([a.page.goto('/discover'), b.page.goto('/discover')])
 
   // Email, not name. The page renders the *session's* `name || email`, while
   // `user.name` here comes from the LOCAL account registry — and the two are

@@ -18,6 +18,11 @@
 
 export const THEMES = [
   {
+    id: 'ember',
+    label: 'Ember',
+    description: "HotTake's own theme — near-black ground, hot coral primary.",
+  },
+  {
     id: 'slate',
     label: 'Slate',
     description: 'Neutral dark placeholder default. Replace with your own theme.',
@@ -33,7 +38,7 @@ export type ThemeId = (typeof THEMES)[number]['id']
 
 /** Read the currently active theme id from <html data-theme>. */
 export function getActiveTheme(): ThemeId {
-  if (typeof document === 'undefined') return 'slate'
+  if (typeof document === 'undefined') return 'ember'
   const id = document.documentElement.getAttribute('data-theme') as ThemeId | null
   return id ?? 'slate'
 }

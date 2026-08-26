@@ -44,3 +44,39 @@
   --color-shell: #fafafa;
   --color-shell-panel: #ffffff;
 }
+
+/*
+ * Ember — HotTake's own theme.
+ *
+ * Near-black ground with a hot coral primary and a warm off-white text tone,
+ * so the photo on a discovery card is the brightest thing on screen and the
+ * fire motif reads without needing an emoji on every surface. Radius is
+ * pushed up: the whole product is one big rounded card.
+ */
+[data-theme="ember"] {
+  color-scheme: dark;
+  --color-background: #0c0a09;
+  --color-foreground: #faf6f2;
+  --color-card: #1a1614;
+  --color-card-foreground: #faf6f2;
+  --color-popover: #1a1614;
+  --color-popover-foreground: #faf6f2;
+  --color-primary: #ff5a3c;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #241f1c;
+  --color-secondary-foreground: #faf6f2;
+  --color-muted: #241f1c;
+  --color-muted-foreground: #a89e97;
+  --color-accent: #2f2825;
+  --color-accent-foreground: #faf6f2;
+  --color-destructive: #f43f5e;
+  --color-destructive-foreground: #ffffff;
+  --color-border: rgba(122, 106, 98, 0.32);
+  --color-input: rgba(122, 106, 98, 0.32);
+  --color-ring: #ff5a3c;
+  --radius: 1rem;
+  --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-card-hover: 0 2px 10px 0 rgba(0, 0, 0, 0.5);
+  --color-shell: #0c0a09;
+  --color-shell-panel: #1a1614;
+}

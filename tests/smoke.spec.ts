@@ -5,7 +5,7 @@ import { captureConsoleErrors } from './helpers/errors'
  * Smoke tests covering both page kinds this template ships:
  *   - '/'      → the static landing (top level of src/pages/): no providers,
  *                so no auth fetch and no records WebSocket on load.
- *   - '/home'  → a dynamic page (under src/pages/(app)/): the providers mount,
+ *   - '/discover' → a dynamic page (under src/pages/(app)/): the providers mount,
  *                the nav shell renders, and the records WebSocket connects.
  *
  * The "static contract" test is the guardrail for the per-page opt-out: if
@@ -41,13 +41,13 @@ test.describe('Smoke tests', () => {
     expect(offenders).toEqual([])
   })
 
-  test('dynamic app boundary mounts on /home', async ({ page }) => {
-    await page.goto('/home')
+  test('dynamic app boundary mounts on /discover', async ({ page }) => {
+    await page.goto('/discover')
     await expect(page.getByTestId('app-navigation')).toBeVisible({ timeout: 15000 })
   })
 
   test('sign-in button visible when logged out', async ({ page }) => {
-    await page.goto('/home')
+    await page.goto('/discover')
     await expect(page.getByTestId('nav-sign-in-button')).toBeVisible({ timeout: 15000 })
     await expect(page.getByTestId('nav-user-name')).toHaveCount(0)
   })
