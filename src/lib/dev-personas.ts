@@ -127,6 +127,8 @@ const HOT_TAKES: string[] = [
 const ALL_GENDERS: Gender[] = ['woman', 'man', 'nonbinary']
 
 export interface GeneratedPersona {
+  /** Index in the run. Paired with `ownerId` in a uniqueness constraint. */
+  slot: number
   displayName: string
   age: number
   hotTake: string
@@ -186,6 +188,7 @@ export function generatePersonas(
     )
 
     results.push({
+      slot: i,
       displayName,
       age: 19 + Math.floor(random() * 17),
       hotTake: HOT_TAKES[(i * 7 + Math.floor(random() * 3)) % HOT_TAKES.length],

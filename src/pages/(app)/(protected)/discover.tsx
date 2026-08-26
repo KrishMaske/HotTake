@@ -21,6 +21,7 @@ import {
   ActionError,
   callAction,
   type DisplayProfile,
+  type RankedDisplayProfile,
   type SwipeResult,
 } from '../../../lib/hottake'
 import { useDiscoveryStack, useMyProfile, usePhotoUrl } from '../../../lib/use-hottake'
@@ -52,7 +53,7 @@ export default function Discover() {
   const next = stack[1]
 
   const decide = useCallback(
-    async (direction: Decision, person: DisplayProfile | undefined) => {
+    async (direction: Decision, person: RankedDisplayProfile | undefined) => {
       if (!person || pending) return
       setPending(true)
       setLeaving(direction)
@@ -215,7 +216,7 @@ function ProfileCard({
   decorative = false,
   ...handlers
 }: {
-  person: DisplayProfile
+  person: RankedDisplayProfile
   photoUrl: (key: string | undefined) => string | undefined
   className?: string
   style?: React.CSSProperties
@@ -275,6 +276,16 @@ function ProfileCard({
           >
             {person.displayName}, {person.age}
           </h2>
+          {/* Why the ranker put this card here. Ordering is otherwise
+              invisible, and an unexplained "algorithm" is just noise. */}
+          {person.rankReason && (
+            <p
+              className="mt-1 text-xs font-medium text-white/75 drop-shadow"
+              data-testid={decorative ? undefined : 'card-reason'}
+            >
+              {person.rankReason}
+            </p>
+          )}
         </div>
       </div>
 

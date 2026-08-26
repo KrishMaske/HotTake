@@ -57,6 +57,7 @@ interface DevProfileRow extends Record<string, unknown> {
   interestedIn: Gender[] | string
   hue: number
   persona?: string
+  slot?: number
 }
 
 interface SwipeRow extends Record<string, unknown> {
@@ -389,10 +390,19 @@ const setDevMode: ActionHandler<Env> = async ({ userId, params, tools }) => {
 /**
  * Seed fixture profiles, one batch per call.
  *
- * Batched because each create is a subrequest and fifty in a single
- * invocation would sit uncomfortably close to the worker's ceiling. The client
- * calls this in a loop until `done`, which also gives it something honest to
- * show in a progress bar.
+ * Batched because each write is a subrequest and fifty in a single invocation
+ * would sit uncomfortably close to the worker's ceiling. The client calls this
+ * in a loop until `done`, which also gives it honest progress to show.
+ *
+ * Work is decided by **which slots are missing**, not by how many rows exist.
+ * A count is a read-then-write race: two overlapping seed loops both read the
+ * same total and both write the same batch, which is exactly how a "50
+ * fixtures" set grew to 95. `uniqueOn: ['ownerId', 'slot']` now makes the
+ * database reject the second write, and working from the missing set means a
+ * retry converges instead of appending.
+ *
+ * It also repairs a set that is already wrong: rows with no slot, an
+ * out-of-range slot, or a duplicate slot are deleted a batch at a time.
  */
 const devSeed: ActionHandler<Env> = async ({ userId, tools }) => {
   const BATCH = 10
@@ -403,82 +413,84 @@ const devSeed: ActionHandler<Env> = async ({ userId, tools }) => {
 
   const existing = await tools.query<DevProfileRow>('dev-profiles', {
     where: { ownerId: userId },
-    limit: DEV_PROFILE_COUNT + 1,
+    limit: 500,
   })
   if (!existing.success) return fail(existing.error)
 
-  const alreadyHave = existing.data.records.length
-  if (alreadyHave >= DEV_PROFILE_COUNT) {
-    return { success: true, data: { seeded: alreadyHave, target: DEV_PROFILE_COUNT, done: true } }
+  // Pass 1 - repair. Anything not addressable by a unique in-range slot is
+  // junk from before the constraint existed, or from a race that predates it.
+  const bySlot = new Map<number, string>()
+  const junk: string[] = []
+  for (const row of existing.data.records) {
+    const slot = Number(row.data.slot)
+    const valid = Number.isInteger(slot) && slot >= 0 && slot < DEV_PROFILE_COUNT
+    if (!valid || bySlot.has(slot)) {
+      junk.push(row.recordId)
+      continue
+    }
+    bySlot.set(slot, row.recordId)
   }
 
+  if (junk.length > 0) {
+    // Smaller batches here: each repair also unwinds the fixture's swipe and
+    // any conversation it was part of, so a row costs several subrequests.
+    const batch = junk.slice(0, 5)
+    const staleMatches = await tools.query<MatchRow>('matches', { limit: 200 })
+
+    for (const recordId of batch) {
+      await tools.deleteWhere('swipes', { swiperId: userId, targetId: recordId }, 10)
+
+      // Matches created before a match required a right-swipe from both sides
+      // are no longer valid state. Drop them with their fixture rather than
+      // leaving orphaned conversations in the matches list.
+      if (staleMatches.success) {
+        for (const match of staleMatches.data.records) {
+          if (!isTruthy(match.data.synthetic)) continue
+          const participants = readJsonArray(match.data.participants)
+          if (!participants.includes(userId)) continue
+          if (!participants.includes(recordId)) continue
+          await tools.deleteWhere('messages', { channelId: match.data.channelId }, 500)
+          await tools.remove('channels', match.data.channelId)
+          await tools.remove('matches', match.recordId)
+        }
+      }
+
+      await tools.remove('dev-profiles', recordId)
+    }
+    return {
+      success: true,
+      data: {
+        seeded: bySlot.size,
+        target: DEV_PROFILE_COUNT,
+        repaired: batch.length,
+        done: false,
+      },
+    }
+  }
+
+  if (bySlot.size >= DEV_PROFILE_COUNT) {
+    return { success: true, data: { seeded: bySlot.size, target: DEV_PROFILE_COUNT, done: true } }
+  }
+
+  // Pass 2 - fill. The run is deterministic, so slot N is always the same
+  // person and a partial set completes without regenerating it.
   const wanted = readJsonArray(mine.data.interestedIn) as Gender[]
-  // Generate the full run deterministically, then take this call's slice, so
-  // batches never collide or repeat.
   const all = generatePersonas(DEV_PROFILE_COUNT, wanted, mine.data.gender, 1)
-  const slice = all.slice(alreadyHave, Math.min(alreadyHave + BATCH, DEV_PROFILE_COUNT))
+  const missing = all.filter((persona) => !bySlot.has(persona.slot)).slice(0, BATCH)
 
-  for (const persona of slice) {
-    const created = await tools.create('dev-profiles', { ownerId: userId, ...persona })
-    if (!created.success) return fail(created.error)
+  let created = 0
+  for (const persona of missing) {
+    const result = await tools.create('dev-profiles', { ownerId: userId, ...persona })
+    // A uniqueness rejection means a concurrent seed won that slot. That is
+    // the constraint doing its job, not a failure worth surfacing.
+    if (result.success) created++
   }
 
-  const seeded = alreadyHave + slice.length
+  const seeded = bySlot.size + created
   return {
     success: true,
     data: { seeded, target: DEV_PROFILE_COUNT, done: seeded >= DEV_PROFILE_COUNT },
   }
-}
-
-/**
- * Pre-match a random subset of the caller's fixtures, so developer mode has a
- * populated Matches screen without swiping through fifty cards first.
- */
-const devMatch: ActionHandler<Env> = async ({ userId, tools }) => {
-  const mine = await requireOwnProfile(tools, userId)
-  if (!mine.ok) return fail(mine.error)
-  if (!isTruthy(mine.data.devMode)) return fail('Turn developer mode on first')
-
-  const fixtures = await tools.query<DevProfileRow>('dev-profiles', {
-    where: { ownerId: userId },
-    limit: DEV_PROFILE_COUNT,
-  })
-  if (!fixtures.success) return fail(fixtures.error)
-  if (fixtures.data.records.length === 0) return fail('Seed some profiles first')
-
-  const existingMatches = await tools.query<MatchRow>('matches', { limit: 200 })
-  if (!existingMatches.success) return fail(existingMatches.error)
-  const alreadyMatched = new Set(
-    existingMatches.data.records.flatMap((m) => readJsonArray(m.data.participants)),
-  )
-
-  // "A random amount": between 6 and 12 of them like you back.
-  const target = 6 + Math.floor(Math.random() * 7)
-  const candidates = fixtures.data.records
-    .filter((f) => !alreadyMatched.has(f.recordId))
-    .sort(() => Math.random() - 0.5)
-    .slice(0, target)
-
-  let created = 0
-  for (const fixture of candidates) {
-    // Record the like as well, so the fixture leaves the discovery stack the
-    // same way a real mutual like would.
-    const priorSwipe = await tools.query<SwipeRow>('swipes', {
-      where: { swiperId: userId, targetId: fixture.recordId },
-      limit: 1,
-    })
-    if (priorSwipe.success && priorSwipe.data.records.length === 0) {
-      await tools.create('swipes', {
-        swiperId: userId,
-        targetId: fixture.recordId,
-        direction: 'like',
-      })
-    }
-    const result = await createMatch(tools, userId, fixture.recordId, true)
-    if (result.success) created++
-  }
-
-  return { success: true, data: { matched: created } }
 }
 
 /**
@@ -642,7 +654,6 @@ export const actions: Record<string, ActionHandler<Env>> = {
   sendMessage,
   setDevMode,
   devSeed,
-  devMatch,
   devReset,
   devReply,
 }

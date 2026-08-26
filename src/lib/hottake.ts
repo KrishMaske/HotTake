@@ -61,6 +61,14 @@ export interface DisplayProfile {
   photoKey?: string
   hue?: number
   synthetic: boolean
+  /** When the underlying record was created; a ranking signal. */
+  createdAt?: string
+}
+
+/** A `DisplayProfile` after `rankProfiles` has scored and explained it. */
+export type RankedDisplayProfile = DisplayProfile & {
+  rankScore: number
+  rankReason?: string
 }
 
 export interface SwipeResult {

@@ -132,8 +132,20 @@ export const devProfilesSchema: CollectionSchema = {
     { name: 'hue', storage: 'number', interpretation: 'plain', required: true },
     /** One line of extra character, used only to steer the AI's replies. */
     { name: 'persona', storage: 'text', interpretation: 'plain' },
+    /**
+     * This fixture's index in the generated run, 0..DEV_PROFILE_COUNT-1.
+     *
+     * Exists to make seeding safe under concurrency. Without it, `devSeed`
+     * decides what to create by counting rows, which is a read-then-write
+     * race: two overlapping seed loops both read the same count and both
+     * write the same batch. With `uniqueOn` below, the second write is
+     * rejected by the database instead, so the set can never exceed its size
+     * no matter how many callers race.
+     */
+    { name: 'slot', storage: 'number', interpretation: 'plain', required: true },
   ],
   ownerField: 'ownerId',
+  uniqueOn: ['ownerId', 'slot'],
   permissions: {
     '*': { read: false, create: false, update: false, delete: false },
     viewer: { read: false, create: false, update: false, delete: false },

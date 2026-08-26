@@ -72,11 +72,13 @@ async function ensureProfile(
 test.describe('developer mode', () => {
   test.describe.configure({ timeout: 240_000 })
 
-  test('seeds fixtures, matches some of them, and hides them when off', async ({ users }) => {
+  test('seeds fixtures, and a match still takes a right-swipe from both sides', async ({
+    users,
+  }) => {
     const [alex] = await users(['Alex'])
     await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
 
-    // Start clean so the counts below mean something.
+    // Start clean so the assertions below mean something.
     await callAction(alex.page, 'setDevMode', { enabled: true })
     await callAction(alex.page, 'devReset', {})
 
@@ -87,22 +89,37 @@ test.describe('developer mode', () => {
     await expect(alex.page.getByTestId('dev-mode-chip')).toBeVisible()
 
     await alex.page.getByTestId('dev-seed').click()
-    // Seeding is batched ten at a time, then matched — give it room.
     await expect(alex.page.getByTestId('dev-controls')).toContainText('50 / 50', {
-      timeout: 120_000,
+      timeout: 180_000,
     })
+    // "50 / 50" exactly. Overshoot ("95 / 50") would fail this, and the race
+    // test below pins the number down through the action itself.
 
-    // --- fixtures reach discovery -------------------------------------------
+    // --- seeding alone creates no matches ------------------------------------
+    // A match means both sides swiped right. Fixtures are not pre-matched.
+    await alex.page.goto('/matches')
+    await expect(alex.page.getByTestId('matches-empty')).toBeVisible({ timeout: 20_000 })
+
+    // --- swiping right is what produces one ----------------------------------
     await alex.page.goto('/discover')
-    await expect(alex.page.getByTestId('discovery-card').first()).toBeVisible({
-      timeout: 20_000,
-    })
+    await expect(alex.page.getByTestId('discovery-card')).toBeVisible({ timeout: 20_000 })
 
-    // --- a random subset already matched ------------------------------------
+    let matched = false
+    // Roughly half the fixtures like back, so a handful of likes is plenty;
+    // the loop is bounded so a change in that ratio fails loudly, not forever.
+    for (let i = 0; i < 14 && !matched; i++) {
+      if ((await alex.page.getByTestId('discovery-card').count()) === 0) break
+      await alex.page.getByTestId('like-button').click()
+      await alex.page.waitForTimeout(900)
+      if ((await alex.page.getByTestId('match-modal').count()) > 0) {
+        matched = true
+        await alex.page.getByText('Keep swiping').click()
+      }
+    }
+    expect(matched).toBe(true)
+
     await alex.page.goto('/matches')
     await expect(alex.page.getByTestId('matches-list')).toBeVisible({ timeout: 20_000 })
-    const matchCount = await alex.page.getByTestId('matches-list').locator('li').count()
-    expect(matchCount).toBeGreaterThan(0)
 
     // --- toggling off hides every synthetic match ---------------------------
     await alex.page.goto('/profile')
@@ -110,12 +127,41 @@ test.describe('developer mode', () => {
     await expect(alex.page.getByTestId('dev-mode-chip')).toHaveCount(0, { timeout: 20_000 })
 
     await alex.page.goto('/matches')
-    // Only real matches survive, so the AI badge must be gone entirely.
     await expect(alex.page.getByText('AI', { exact: true })).toHaveCount(0, { timeout: 20_000 })
 
     // Leave it off and cleaned up. Developer mode is not the resting state,
     // and fixtures left behind would show up in the real-user specs' stacks.
+    await callAction(alex.page, 'setDevMode', { enabled: true })
     await callAction(alex.page, 'devReset', {})
+    await callAction(alex.page, 'setDevMode', { enabled: false })
+  })
+
+  test('seeding twice never exceeds the fixture count', async ({ users }) => {
+    const [alex] = await users(['Alex'])
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+    await callAction(alex.page, 'setDevMode', { enabled: true })
+    await callAction(alex.page, 'devReset', {})
+
+    // Two seed loops racing is exactly what produced 95 fixtures for a target
+    // of 50. `uniqueOn: ['ownerId', 'slot']` is what makes the second one a
+    // no-op rather than a duplicate.
+    const drain = async () => {
+      for (let i = 0; i < 40; i++) {
+        const r = await callAction(alex.page, 'devSeed', {})
+        if (!r.body.success || r.body.data.done) return r
+      }
+      return null
+    }
+    const [first, second] = await Promise.all([drain(), drain()])
+    expect(first?.body.success).toBe(true)
+    expect(second?.body.success).toBe(true)
+
+    const final = await callAction(alex.page, 'devSeed', {})
+    expect(final.body.data.seeded).toBe(50)
+    expect(final.body.data.done).toBe(true)
+
+    await callAction(alex.page, 'devReset', {})
+    await callAction(alex.page, 'setDevMode', { enabled: false })
   })
 
   test('fixtures belong to their developer and nobody else', async ({ users }) => {
@@ -160,27 +206,36 @@ test.describe('developer mode', () => {
     await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
     await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.', 'woman')
 
-    // Alex and Maya match in the main spec; find that channel if it exists.
-    await alex.page.goto('/matches')
-    await expect(
-      alex.page.getByTestId('matches-list').or(alex.page.getByTestId('matches-empty')),
-    ).toBeVisible({ timeout: 20_000 })
+    // Build the real conversation deterministically rather than hunting the
+    // matches list for a link that may not be there yet.
+    const idOf = (page: Page) =>
+      page.evaluate(async () => {
+        const res = await fetch('/api/auth/token', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+        })
+        const { token } = (await res.json()) as { token: string }
+        return JSON.parse(atob(token.split('.')[1])).sub as string
+      })
 
-    const href = await alex.page
-      .locator('[data-testid="matches-list"] a')
-      .first()
-      .getAttribute('href')
-      .catch(() => null)
+    const alexId = await idOf(alex.page)
+    const mayaId = await idOf(maya.page)
 
-    test.skip(!href, 'No conversation available to probe')
-    const channelId = href!.split('/messages/')[1]
+    await callAction(alex.page, 'swipe', { targetId: mayaId, direction: 'like' })
+    const reciprocal = await callAction(maya.page, 'swipe', {
+      targetId: alexId,
+      direction: 'like',
+    })
+    expect(reciprocal.body.success).toBe(true)
+    expect(reciprocal.body.data.matched).toBe(true)
+    const channelId = reciprocal.body.data.channelId as string
+    expect(channelId).toBeTruthy()
 
+    // The guard: an AI reply must never appear in a conversation with a human,
+    // whatever the caller asks for.
     const result = await callAction(alex.page, 'devReply', { channelId })
-    // Either it is a real conversation (refused), or a synthetic one that
-    // needs a key. Both are correct answers; what must never happen is an AI
-    // message appearing in a conversation with an actual human.
-    if (!result.body.success) {
-      expect(result.body.error).toMatch(/real person|GROQ_API_KEY|did not answer|reach the AI/i)
-    }
+    expect(result.body.success).toBe(false)
+    expect(result.body.error).toContain('real person')
   })
 })
