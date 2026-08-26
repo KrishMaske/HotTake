@@ -113,8 +113,9 @@ test.describe('developer mode', () => {
     // Only real matches survive, so the AI badge must be gone entirely.
     await expect(alex.page.getByText('AI', { exact: true })).toHaveCount(0, { timeout: 20_000 })
 
-    // Back on, so the rest of the suite and any manual poking still has data.
-    await callAction(alex.page, 'setDevMode', { enabled: true })
+    // Leave it off and cleaned up. Developer mode is not the resting state,
+    // and fixtures left behind would show up in the real-user specs' stacks.
+    await callAction(alex.page, 'devReset', {})
   })
 
   test('fixtures belong to their developer and nobody else', async ({ users }) => {
@@ -148,6 +149,10 @@ test.describe('developer mode', () => {
       maya.page.getByTestId('discovery-card').or(maya.page.getByTestId('discovery-empty')),
     ).toBeVisible({ timeout: 20_000 })
     await expect(maya.page.getByText('Dev fixture')).toHaveCount(0)
+
+    // Put Alex back to the resting state for the rest of the suite.
+    await callAction(alex.page, 'devReset', {})
+    await callAction(alex.page, 'setDevMode', { enabled: false })
   })
 
   test('devReply refuses a conversation with a real person', async ({ users }) => {

@@ -137,6 +137,12 @@ test.describe('HotTake important path', () => {
     await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
     await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.', 'woman')
 
+    // This spec is about real people. Developer-mode fixtures would fill the
+    // stack with faces the walk below has to page past, so make the starting
+    // state explicit rather than inheriting whatever ran last.
+    await callAction(alex.page, 'setDevMode', { enabled: false })
+    await callAction(maya.page, 'setDevMode', { enabled: false })
+
     // --- discovery + reciprocal matching ------------------------------------
     // Alex likes Maya. Whether this is the first or the second half of the
     // pair depends on prior runs, so both sides like and we assert on the

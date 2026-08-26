@@ -6,6 +6,10 @@ A realtime dating prototype where every profile is one photo and one opinion
 worth arguing about. Browse profiles, like or pass, form mutual matches, and
 message your matches in realtime.
 
+Ships with a **developer mode**: 50 fixture people only you can see, some of
+whom already match you, whose replies come from Groq — so the whole loop is
+testable without a second human and a second browser.
+
 **Live:** https://hottake.app.space
 
 Built on [DeepSpace](https://deep.space) using authentication, realtime
@@ -26,6 +30,11 @@ sign in → create profile → discover → like / pass → mutual like → matc
 That is the whole app. Everything below exists to make that path correct
 rather than to add a second one.
 
+Discovery respects gender and preferences: you see someone only when their
+gender is in your `interestedIn` **and** yours is in theirs. That rule is
+applied in the client stack *and* re-checked inside the `swipe` action, so it
+survives a hand-rolled request.
+
 ---
 
 ## Running it locally
@@ -42,10 +51,22 @@ Deploy:
 npx deepspace deploy
 ```
 
-There is nothing to configure. No `.env` file, no API keys: auth, storage, and
-the database are platform services reached through the app's own worker. App
-secrets, if you add any, belong in `npx deepspace secrets` — never in a
-committed file.
+Auth, storage, and the database are platform services reached through the
+app's own worker — nothing to configure.
+
+The one exception is developer-mode AI replies, which call Groq (not a
+platform integration, so the app brings its own key):
+
+```bash
+npx deepspace secrets set GROQ_API_KEY=your-key-here
+npx deepspace secrets pull        # refresh the local .dev.vars cache
+npx deepspace deploy
+```
+
+Optionally `GROQ_MODEL` overrides the default (`llama-3.3-70b-versatile`).
+Without the key everything else works and `devReply` fails closed with a
+message saying what to set. Secrets belong in the store, never in `.env` or a
+committed file — the worker does not read `.env` at all.
 
 **Node 22.15+ is required** (the SDK refuses older lines).
 
@@ -117,10 +138,12 @@ WebSocket.
 | Collection | member read | member write |
 | --- | --- | --- |
 | `profiles` | `true` — this is discovery | `create`, `update: 'own'` |
+| `dev-profiles` | `'own'` — your fixtures are yours alone | none; the `devSeed` action is the only writer |
 | `swipes` | `'own'` — nobody sees who liked them | none; the `swipe` action is the only writer |
 | `matches` | `'collaborator'` — participants only | none; created by the `swipe` action |
 | `channels` | `'collaborator'` | none |
 | `messages` | `'collaborator'` | none; the `sendMessage` action is the only writer |
+| `read-receipts` | `'own'` — your read state is not public | direct; `userId` is `userBound` |
 
 Identity is never taken from client input. `userId`, `swiperId`, and `authorId`
 are all `userBound: true`, which the record room stamps from the verified JWT
@@ -146,6 +169,41 @@ third account holding a real channel id.
 
 ---
 
+## Developer mode
+
+Testing a dating app needs two people. Developer mode removes that
+requirement: flip the switch on `/profile` and HotTake generates 50 fixture
+people, pre-matches a random 6–12 of them, and answers their messages with
+Groq.
+
+The interesting part is that it is scoped by the **permission layer**, not by
+a client-side filter. Fixtures live in `dev-profiles`, which is `read: 'own'`,
+so the Durable Object only ever ships a developer their own — another user
+cannot see them even holding an id, and the `swipe` action re-checks `ownerId`
+before acting. That is why they are a separate collection rather than a
+`synthetic: true` flag on `profiles`, where one missing `.filter()` would leak
+fifty fake people into a real user's stack.
+
+Turning it off hides every synthetic match and their conversations; the switch
+does not delete anything. **Clear** does.
+
+Two implementation notes worth knowing:
+
+- **Seeding is batched.** Each `devSeed` call creates ten fixtures and reports
+  progress; the client loops until done. Fifty record writes in one worker
+  invocation would sit uncomfortably close to the subrequest ceiling.
+- **`messages` carries both `authorId` and `senderId`.** The SDK's `authorId`
+  is `userBound` — always the authenticated account that wrote the row, which
+  for an AI reply is the developer. `senderId` is who the message is *from*,
+  and is what the UI renders. Collapsing them would either misattribute the
+  row or require trusting a client-supplied author.
+
+Fixtures have no photograph. They render a deterministic gradient from a
+stored `hue`, because inventing faces for people who do not exist is the wrong
+default.
+
+---
+
 ## Platform capabilities used
 
 | Capability | Where |
@@ -155,8 +213,9 @@ third account holding a real channel id.
 | **Permissions (RBAC)** | Per-collection rules above, incl. `'own'`, `'collaborator'`, `uniqueOn`, `userBound` |
 | **File storage (R2)** | `useR2Files({ scope: 'app' })` for profile photos |
 | **Messaging** | SDK `MESSAGES_SCHEMA` / `CHANNELS_SCHEMA` + `useMessages`, permissions tightened |
-| **Server actions** | `swipe`, `sendMessage`, `saveProfile` |
+| **Server actions** | `swipe`, `sendMessage`, `saveProfile`, plus the developer-mode four |
 | **Presence** | `usePresence().isOnline` drives the online dot in the conversation header |
+| **Read receipts** | `useReadReceipts` for unread badges, with the SDK's permissive default tightened to `read: 'own'` |
 
 The bundled `deepspace add messaging` feature was **not** used: it ships a
 Slack-style multi-channel UI (sidebar, threads, invitations, member management)
@@ -188,6 +247,13 @@ the SDK and would be the way to add them.
 **Presence is coarse.** `usePresence` reports online from a 60-second
 heartbeat, so the dot can lag reality by up to a minute.
 
+**Developer-mode AI replies are unmetered.** `devReply` is gated to fixtures
+the caller owns, but there is no rate limit on it, so a determined developer
+can burn their own Groq quota. Fine for a prototype, not for anything shared.
+
+**Gender is a three-option enum.** Enough to make the matching rule real, and
+plainly not enough for a product people would actually use.
+
 **Photo upload has no crop or compression.** Files are capped client-side at
 5 MB and the aspect ratio is whatever the user uploaded.
 
@@ -205,11 +271,13 @@ privacy, and recommendation ranking.
 
 ```
 src/
-  actions/index.ts              swipe, sendMessage, saveProfile
+  actions/index.ts              swipe, sendMessage, saveProfile,
+                                setDevMode, devSeed, devMatch, devReset, devReply
   schemas/hottake-schemas.ts    collections + the permission model
   schemas.ts                    schema registration
   lib/hottake.ts                action client, shared types
-  lib/use-hottake.ts            profile/match/photo hooks
+  lib/use-hottake.ts            profile/match/photo/directory hooks
+  lib/dev-personas.ts           fixture generator (deterministic, dependency-free)
   components/ProfileForm.tsx    editor shared by onboarding and /profile
   components/Navigation.tsx     top bar + bottom tab bar
   pages/
@@ -219,5 +287,7 @@ src/
                                 messages/[id], profile
 tests/
   hottake.spec.ts               the important path + permission boundaries
+  dev-mode.spec.ts              fixtures, their scoping, and AI-reply guards
+  ../src/lib/hottake.test.ts    unit tests for the matching predicates
   seed-demo.spec.ts             demo data utility (excluded from the suite)
 ```

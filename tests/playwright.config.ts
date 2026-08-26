@@ -27,12 +27,19 @@ const BASE_URL = REMOTE_URL ?? `http://localhost:${PORT}`
 export default defineConfig({
   testDir: '.',
   testMatch: '**/*.spec.ts',
-  // seed-demo is a data-seeding utility, not a test of behaviour. Run it by
-  // path when an environment needs demo profiles; never as part of the suite.
-  testIgnore: '**/seed-demo.spec.ts',
+  // seed-demo is a data-seeding utility, not a test of behaviour, so it is
+  // excluded from the suite. Naming it on the command line is not enough to
+  // override testIgnore, so it opts in explicitly:
+  //   DEEPSPACE_SEED=1 npx playwright test --config tests/playwright.config.ts tests/seed-demo.spec.ts
+  testIgnore: process.env.DEEPSPACE_SEED ? [] : '**/seed-demo.spec.ts',
   globalSetup: './helpers/global-setup.ts',
   timeout: 30_000,
   retries: 0,
+  // One worker on purpose. These specs drive a small pool of *shared* live
+  // accounts against a real backend, so two workers running different specs
+  // as the same user race on that user's profile, swipes and developer-mode
+  // fixtures. Parallelism here buys a minute and costs reproducibility.
+  workers: 1,
   use: {
     baseURL: BASE_URL,
     headless: true,
