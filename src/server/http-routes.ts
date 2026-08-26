@@ -45,6 +45,44 @@ function reassertAppIdentity(headers: Headers, env: Env): void {
   headers.set('x-app-id', env.DEEPSPACE_APP_ID)
 }
 
+/**
+ * Where to land a user after OAuth.
+ *
+ * The value comes from a cookie the client sets before opening the sign-in
+ * overlay, so it is untrusted input and has to be constrained to a same-origin
+ * path — otherwise this route is an open redirect. Anything suspicious falls
+ * back to the app's entry point.
+ */
+const POST_AUTH_COOKIE = 'ht_post_auth'
+const DEFAULT_POST_AUTH_PATH = '/discover'
+
+function safePostAuthPath(raw: string | undefined | null): string {
+  if (!raw) return DEFAULT_POST_AUTH_PATH
+  let value: string
+  try {
+    value = decodeURIComponent(raw)
+  } catch {
+    return DEFAULT_POST_AUTH_PATH
+  }
+  // Must be a rooted path. `//host` and `/\host` are protocol-relative URLs
+  // that would leave the origin, and backslashes are normalized to slashes by
+  // some browsers — reject both shapes rather than trying to repair them.
+  if (!value.startsWith('/')) return DEFAULT_POST_AUTH_PATH
+  if (value.startsWith('//') || value.startsWith('/\\')) return DEFAULT_POST_AUTH_PATH
+  // Sending someone back into the API surface after login is never intended.
+  if (value.startsWith('/api/')) return DEFAULT_POST_AUTH_PATH
+  return value
+}
+
+function readCookie(header: string | undefined, name: string): string | undefined {
+  if (!header) return undefined
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=')
+    if (key === name) return rest.join('=')
+  }
+  return undefined
+}
+
 /** Register auth, debug, and integration routes in their required order. */
 export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
   // Social OAuth redirect + code exchange.
@@ -63,12 +101,21 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
   app.get('/api/auth/oauth-complete', async (c) => {
     const code = c.req.query('code')
     const appOrigin = new URL(c.req.url).origin
-    // Land the signed-in user in the app, not on the static landing. `/` is a
-    // static page (no auth/realtime providers), so redirecting there after auth
-    // would strand the user; `/home` is the dynamic app boundary.
-    const appHome = `${appOrigin}/home`
+    // Land the signed-in user where they started, not on the static landing.
+    // `/` mounts no auth/realtime providers, so returning there strands them.
+    // The path is restored from a cookie the client set before sign-in, and is
+    // validated because it is attacker-influenceable.
+    const requested = readCookie(c.req.header('Cookie'), POST_AUTH_COOKIE)
+    const appHome = `${appOrigin}${safePostAuthPath(requested)}`
+    // Consumed either way, so a stale destination can't hijack a later login.
+    const clearPostAuth = `${POST_AUTH_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`
 
-    if (!code) return c.redirect(appHome)
+    if (!code) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: appHome, 'Set-Cookie': clearPostAuth },
+      })
+    }
 
     const res = await authWorkerFetch(c.env, '/api/auth/exchange-code', {
       method: 'POST',
@@ -76,18 +123,22 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
       body: JSON.stringify({ code }),
     })
 
-    if (!res.ok) return c.redirect(appHome)
+    const failed = new Response(null, {
+      status: 302,
+      headers: { Location: appHome, 'Set-Cookie': clearPostAuth },
+    })
+    if (!res.ok) return failed
     const data = (await res.json()) as { sessionToken?: string }
-    if (!data.sessionToken) return c.redirect(appHome)
+    if (!data.sessionToken) return failed
     const sessionToken = data.sessionToken
 
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: appHome,
-        'Set-Cookie': `__Secure-better-auth.session_token=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
-      },
-    })
+    const headers = new Headers({ Location: appHome })
+    headers.append(
+      'Set-Cookie',
+      `__Secure-better-auth.session_token=${encodeURIComponent(sessionToken)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
+    )
+    headers.append('Set-Cookie', clearPostAuth)
+    return new Response(null, { status: 302, headers })
   })
 
   app.all('/api/auth/sign-out', async (c) => {

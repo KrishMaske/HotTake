@@ -14,6 +14,7 @@ import { Link, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { AuthGate, AuthOverlay } from 'deepspace'
 import { Flame } from 'lucide-react'
 import { useMyProfile } from '../../../lib/use-hottake'
+import { readJsonArray, rememberPostAuthPath } from '../../../lib/hottake'
 
 export default function ProtectedLayout() {
   return (
@@ -39,8 +40,15 @@ function ProfileGate() {
     )
   }
 
-  if (!profile && !onOnboarding) return <Navigate to="/onboarding" replace />
-  if (profile && onOnboarding) return <Navigate to="/discover" replace />
+  // Gender and preferences were added after the first release, so a profile
+  // created before then is missing them. Without both, mutual-compatibility
+  // filtering would silently empty that user's stack with nothing on screen
+  // explaining why — so treat it as incomplete and finish onboarding instead.
+  const complete =
+    !!profile && !!profile.data.gender && readJsonArray(profile.data.interestedIn).length > 0
+
+  if (!complete && !onOnboarding) return <Navigate to="/onboarding" replace />
+  if (complete && onOnboarding) return <Navigate to="/discover" replace />
 
   return <Outlet />
 }
@@ -56,7 +64,11 @@ function SignedOutPanel() {
         You need an account to see who else has opinions worth defending.
       </p>
       <button
-        onClick={() => setShowAuthModal(true)}
+        onClick={() => {
+          // OAuth leaves the page; remember where to come back to.
+          rememberPostAuthPath()
+          setShowAuthModal(true)
+        }}
         className="mt-7 w-full max-w-xs rounded-full bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
       >
         Sign in
@@ -68,7 +80,13 @@ function SignedOutPanel() {
         Back to home
       </Link>
 
-      {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
+      {showAuthModal && (
+        <AuthOverlay
+          onClose={() => setShowAuthModal(false)}
+          title="Sign in to HotTake"
+          description="One photo. One opinion. See who wants to argue."
+        />
+      )}
     </div>
   )
 }

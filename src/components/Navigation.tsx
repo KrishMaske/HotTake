@@ -12,9 +12,12 @@
 
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { AuthOverlay, useAuthProfileReady, signOut } from 'deepspace'
+import { AuthOverlay, useAuthProfileReady, useQuery, useReadReceipts, signOut } from 'deepspace'
+import type { Message } from 'deepspace'
 import { Flame, Heart, LogOut, User as UserIcon } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { rememberPostAuthPath } from '../lib/hottake'
+import { useMyMatches, useMyProfile } from '../lib/use-hottake'
 import {
   Avatar,
   AvatarFallback,
@@ -29,6 +32,7 @@ import {
 
 export default function Navigation() {
   const { isLoaded, isSignedIn, user, userLoading } = useAuthProfileReady({ requireUser: true })
+  const { devMode } = useMyProfile()
   const [showAuthModal, setShowAuthModal] = useState(false)
   const profileReady = !isSignedIn || (!userLoading && !!user)
 
@@ -44,6 +48,15 @@ export default function Navigation() {
             HotTake
           </span>
         </Link>
+
+        {devMode && (
+          <span
+            data-testid="dev-mode-chip"
+            className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-primary"
+          >
+            Dev
+          </span>
+        )}
 
         <div className="flex-1" />
 
@@ -93,7 +106,12 @@ export default function Navigation() {
         ) : (
           <button
             data-testid="nav-sign-in-button"
-            onClick={() => setShowAuthModal(true)}
+            onClick={() => {
+              // OAuth navigates away; leave a crumb so the worker can send them
+              // back here instead of to the app's default entry point.
+              rememberPostAuthPath()
+              setShowAuthModal(true)
+            }}
             className="rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
           >
             Sign in
@@ -101,7 +119,13 @@ export default function Navigation() {
         )}
       </nav>
 
-      {showAuthModal && <AuthOverlay onClose={() => setShowAuthModal(false)} />}
+      {showAuthModal && (
+        <AuthOverlay
+          onClose={() => setShowAuthModal(false)}
+          title="Sign in to HotTake"
+          description="One photo. One opinion. See who wants to argue."
+        />
+      )}
     </>
   )
 }
@@ -119,6 +143,7 @@ const TABS = [
 export function TabBar() {
   const location = useLocation()
   const { isSignedIn } = useAuthProfileReady({ requireUser: false })
+  const unread = useTotalUnread()
 
   if (!isSignedIn) return null
   if (location.pathname.startsWith('/onboarding')) return null
@@ -132,6 +157,7 @@ export function TabBar() {
     >
       {TABS.map(({ path, label, icon: Icon }) => {
         const active = location.pathname.startsWith(path)
+        const badge = path === '/matches' ? unread : 0
         return (
           <Link
             key={path}
@@ -142,11 +168,33 @@ export function TabBar() {
               active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
             )}
           >
-            <Icon className="h-5 w-5" aria-hidden />
+            <span className="relative">
+              <Icon className="h-5 w-5" aria-hidden />
+              {badge > 0 && (
+                <span className="absolute -right-2 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground">
+                  {badge > 9 ? '9+' : badge}
+                </span>
+              )}
+            </span>
             {label}
           </Link>
         )
       })}
     </nav>
   )
+}
+
+/**
+ * Unread messages across every match the caller can see.
+ *
+ * Queries the collection directly rather than `useMessages(channelId)`, which
+ * is per-channel. The unscoped read is safe and complete: `messages` is
+ * `read: 'collaborator'`, so this only ever returns conversations this user is
+ * a participant of.
+ */
+function useTotalUnread(): number {
+  const { matches } = useMyMatches()
+  const { getUnreadCount } = useReadReceipts()
+  const { records: messages } = useQuery<Message>('messages')
+  return matches.reduce((sum, m) => sum + getUnreadCount(m.data.channelId, messages), 0)
 }

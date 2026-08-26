@@ -12,9 +12,11 @@ import { usersSchema } from './schemas/users-schema'
 import { settingsSchema } from './schemas/admin-schema'
 import {
   channelsSchema,
+  devProfilesSchema,
   matchesSchema,
   messagesSchema,
   profilesSchema,
+  readReceiptsSchema,
   swipesSchema,
 } from './schemas/hottake-schemas'
 
@@ -22,8 +24,10 @@ export const schemas: CollectionSchema[] = [
   usersSchema,
   settingsSchema,
   profilesSchema,
+  devProfilesSchema,
   swipesSchema,
   matchesSchema,
   channelsSchema,
   messagesSchema,
+  readReceiptsSchema,
 ]

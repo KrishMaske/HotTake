@@ -114,6 +114,18 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
    * an authenticated app owner/admin. deepspace dev/test set it locally.
    */
   ALLOW_DEBUG_ROUTES?: string
+  /**
+   * Groq credentials for developer-mode AI replies. Groq is not a platform
+   * integration, so the app calls its OpenAI-compatible endpoint directly and
+   * supplies its own key.
+   *
+   * Set with `deepspace secrets set GROQ_API_KEY=…` — never a committed file.
+   * Absent by design in environments that have not configured it; `devReply`
+   * fails closed with an explanatory message rather than crashing.
+   */
+  GROQ_API_KEY?: string
+  /** Overrides the default Groq model. Optional. */
+  GROQ_MODEL?: string
 }
 
 export type AppContext = { Bindings: Env }

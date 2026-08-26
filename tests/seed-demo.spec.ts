@@ -19,6 +19,7 @@ interface DemoProfile {
   name: string
   age: string
   hotTake: string
+  gender: 'woman' | 'man' | 'nonbinary'
   from: [number, number, number]
   to: [number, number, number]
 }
@@ -29,6 +30,7 @@ const DEMO: DemoProfile[] = [
     name: 'Alex',
     age: '21',
     hotTake: 'Iced coffee is better in winter.',
+    gender: 'man',
     from: [255, 90, 60],
     to: [120, 24, 74],
   },
@@ -37,6 +39,7 @@ const DEMO: DemoProfile[] = [
     name: 'Maya',
     age: '22',
     hotTake: 'Brunch is just overpriced breakfast.',
+    gender: 'woman',
     from: [56, 132, 255],
     to: [22, 30, 96],
   },
@@ -45,6 +48,7 @@ const DEMO: DemoProfile[] = [
     name: 'Casey',
     age: '23',
     hotTake: 'Pineapple belongs on pizza and this is not brave.',
+    gender: 'nonbinary',
     from: [255, 176, 46],
     to: [140, 32, 40],
   },
@@ -66,6 +70,11 @@ async function writeProfile(page: Page, profile: DemoProfile) {
   await nameField.fill(profile.name)
   await page.getByTestId('input-age').fill(profile.age)
   await page.getByTestId('input-hot-take').fill(profile.hotTake)
+  await page.getByTestId(`gender-${profile.gender}`).click()
+  for (const want of ['woman', 'man', 'nonbinary']) {
+    const chip = page.getByTestId(`interest-${want}`)
+    if ((await chip.getAttribute('aria-pressed')) !== 'true') await chip.click()
+  }
 
   await page.locator('input[type="file"]').setInputFiles({
     name: `${profile.name.toLowerCase()}.png`,

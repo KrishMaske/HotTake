@@ -47,8 +47,20 @@ async function callAction(page: Page, name: string, params: Record<string, unkno
   )
 }
 
-/** Onboard through the real UI if this account has no profile yet. */
-async function ensureProfile(page: Page, name: string, age: string, hotTake: string) {
+/**
+ * Onboard through the real UI if this account has no (complete) profile yet.
+ *
+ * Every fixture account picks all three preferences, so mutual-gender
+ * compatibility never removes anyone from these specs' stacks — the rule is
+ * covered by its own test rather than being entangled with the happy path.
+ */
+async function ensureProfile(
+  page: Page,
+  name: string,
+  age: string,
+  hotTake: string,
+  gender: 'woman' | 'man' | 'nonbinary' = 'woman',
+) {
   await page.goto('/discover')
   await expect(page.getByTestId('app-navigation')).toBeVisible({ timeout: 20_000 })
 
@@ -64,6 +76,11 @@ async function ensureProfile(page: Page, name: string, age: string, hotTake: str
   await page.getByTestId('input-name').fill(name)
   await page.getByTestId('input-age').fill(age)
   await page.getByTestId('input-hot-take').fill(hotTake)
+  await page.getByTestId(`gender-${gender}`).click()
+  for (const want of ['woman', 'man', 'nonbinary']) {
+    const chip = page.getByTestId(`interest-${want}`)
+    if ((await chip.getAttribute('aria-pressed')) !== 'true') await chip.click()
+  }
 
   // Upload runs through R2 — the submit button stays disabled until the key
   // comes back, so waiting for it to enable *is* the upload assertion.
@@ -117,8 +134,8 @@ test.describe('HotTake important path', () => {
   test('two users can profile, match, and message in realtime', async ({ users }) => {
     const [alex, maya] = await users(['Alex', 'Maya'])
 
-    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.')
-    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.')
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.', 'woman')
 
     // --- discovery + reciprocal matching ------------------------------------
     // Alex likes Maya. Whether this is the first or the second half of the
@@ -169,7 +186,7 @@ test.describe('HotTake important path', () => {
 
   test('a user cannot swipe on themselves', async ({ users }) => {
     const [alex] = await users(['Alex'])
-    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.')
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
 
     const me = await alex.page.evaluate(async () => {
       const res = await fetch('/api/auth/token', {
@@ -188,7 +205,7 @@ test.describe('HotTake important path', () => {
 
   test('profile validation is enforced server-side, not just in the form', async ({ users }) => {
     const [alex] = await users(['Alex'])
-    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.')
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
 
     // The form blocks this, but the form is not the boundary.
     const underage = await callAction(alex.page, 'saveProfile', {
@@ -196,6 +213,8 @@ test.describe('HotTake important path', () => {
       age: 15,
       hotTake: 'Nope.',
       photoKey: 'whatever',
+      gender: 'man',
+      interestedIn: ['woman'],
     })
     expect(underage.body.success).toBe(false)
     expect(underage.body.error).toContain('18 or older')
@@ -205,6 +224,8 @@ test.describe('HotTake important path', () => {
       age: 21,
       hotTake: 'x'.repeat(400),
       photoKey: 'whatever',
+      gender: 'man',
+      interestedIn: ['woman'],
     })
     expect(longTake.body.success).toBe(false)
     expect(longTake.body.error).toContain('140 characters')
@@ -212,8 +233,8 @@ test.describe('HotTake important path', () => {
 
   test('a stranger cannot post into a conversation they are not part of', async ({ users }) => {
     const [alex, maya] = await users(['Alex', 'Maya'])
-    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.')
-    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.')
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.', 'woman')
 
     // A channel id that does not belong to Alex — the action must refuse on
     // the participants check rather than on the id being unguessable.
@@ -237,9 +258,9 @@ test.describe('HotTake important path', () => {
   test('a third member cannot reach a conversation between two others', async ({ users }) => {
     const [alex, maya, casey] = await users(['Alex', 'Maya', 'Casey'])
 
-    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.')
-    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.')
-    await ensureProfile(casey.page, 'Casey', '23', 'Pineapple belongs on pizza.')
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+    await ensureProfile(maya.page, 'Maya', '22', 'Brunch is just overpriced breakfast.', 'woman')
+    await ensureProfile(casey.page, 'Casey', '23', 'Pineapple belongs on pizza.', 'nonbinary')
 
     await likeIfPresent(alex.page, 'Maya')
     await likeIfPresent(maya.page, 'Alex')

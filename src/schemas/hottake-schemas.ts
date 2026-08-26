@@ -15,13 +15,21 @@
  *  - `matches`, `channels` and `messages` use `read: 'collaborator'` against a
  *    `participants` JSON array, so the Durable Object drops rows the caller is
  *    not a participant in *before* they ever reach the socket.
+ *  - `dev-profiles` are `read: 'own'`: developer-mode fixtures are scoped to
+ *    the developer who generated them by the permission layer, not by a
+ *    client-side filter, so they can never leak into a real user's stack.
  *
  * Ownership is never taken from client input: every identity column is
  * `userBound: true`, which the RecordRoom overwrites with the verified JWT
  * subject on create (see putRecord in deepspace/dist/worker.js).
  */
 
-import { CHANNELS_SCHEMA, MESSAGES_SCHEMA, type CollectionSchema } from 'deepspace/schema'
+import {
+  CHANNELS_SCHEMA,
+  MESSAGES_SCHEMA,
+  READ_RECEIPTS_SCHEMA,
+  type CollectionSchema,
+} from 'deepspace/schema'
 
 /** Hot takes are a one-liner, not an essay. Enforced in UI and in the action. */
 export const HOT_TAKE_MAX = 140
@@ -29,10 +37,29 @@ export const HOT_TAKE_MAX = 140
 export const MIN_AGE = 18
 export const MAX_AGE = 120
 
+export const GENDERS = ['woman', 'man', 'nonbinary'] as const
+export type Gender = (typeof GENDERS)[number]
+
+export const GENDER_LABELS: Record<Gender, string> = {
+  woman: 'Woman',
+  man: 'Man',
+  nonbinary: 'Non-binary',
+}
+
+/** Plural form, for the "interested in" picker. */
+export const GENDER_PLURALS: Record<Gender, string> = {
+  woman: 'Women',
+  man: 'Men',
+  nonbinary: 'Non-binary people',
+}
+
+/** How many fixture profiles a developer-mode seed creates. */
+export const DEV_PROFILE_COUNT = 50
+
 /**
- * Shared by matches/channels/messages: the two user ids allowed to see the
- * row. `collaboratorsField` points the RBAC layer at it, and `'collaborator'`
- * resolves to "owner OR listed here".
+ * Shared by matches/channels/messages: the two participant ids allowed to see
+ * the row. `collaboratorsField` points the RBAC layer at it, and
+ * `'collaborator'` resolves to "owner OR listed here".
  */
 const participantsColumn = {
   name: 'participants',
@@ -49,6 +76,19 @@ export const profilesSchema: CollectionSchema = {
     { name: 'age', storage: 'number', interpretation: 'plain', required: true },
     { name: 'hotTake', storage: 'text', interpretation: 'plain', required: true },
     { name: 'photoKey', storage: 'text', interpretation: 'plain', required: true },
+    {
+      name: 'gender',
+      storage: 'text',
+      interpretation: { kind: 'select', options: [...GENDERS] },
+      required: true,
+    },
+    // A JSON array rather than a single value: "interested in" is genuinely
+    // multi-valued, and a select would force everyone into three buckets.
+    { name: 'interestedIn', storage: 'text', interpretation: { kind: 'json' }, required: true },
+    // Developer mode is per-account state, so it lives on the profile rather
+    // than in localStorage — it has to be readable by the server actions that
+    // decide whether to serve fixtures.
+    { name: 'devMode', storage: 'number', interpretation: { kind: 'boolean' } },
   ],
   ownerField: 'userId',
   // One profile per human, enforced in SQLite rather than by a read-then-write
@@ -59,6 +99,48 @@ export const profilesSchema: CollectionSchema = {
     viewer: { read: false, create: false, update: false, delete: false },
     member: { read: true, create: true, update: 'own', delete: false },
     admin: { read: true, create: true, update: true, delete: true },
+  },
+}
+
+/**
+ * Developer-mode fixture profiles.
+ *
+ * These are real records so that matches and conversations against them behave
+ * exactly like the real thing — but `read: 'own'` means the record room only
+ * ever ships a developer their *own* fixtures. Another user cannot see them
+ * even if they go looking, which is why this is a separate collection rather
+ * than a `synthetic: true` flag on `profiles`.
+ *
+ * They carry no photo. `hue` seeds a deterministic gradient in the UI instead,
+ * which keeps seeding instant and avoids inventing images of people who do not
+ * exist.
+ */
+export const devProfilesSchema: CollectionSchema = {
+  name: 'dev-profiles',
+  columns: [
+    { name: 'ownerId', storage: 'text', interpretation: 'plain', userBound: true, immutable: true },
+    { name: 'displayName', storage: 'text', interpretation: 'plain', required: true },
+    { name: 'age', storage: 'number', interpretation: 'plain', required: true },
+    { name: 'hotTake', storage: 'text', interpretation: 'plain', required: true },
+    {
+      name: 'gender',
+      storage: 'text',
+      interpretation: { kind: 'select', options: [...GENDERS] },
+      required: true,
+    },
+    { name: 'interestedIn', storage: 'text', interpretation: { kind: 'json' }, required: true },
+    { name: 'hue', storage: 'number', interpretation: 'plain', required: true },
+    /** One line of extra character, used only to steer the AI's replies. */
+    { name: 'persona', storage: 'text', interpretation: 'plain' },
+  ],
+  ownerField: 'ownerId',
+  permissions: {
+    '*': { read: false, create: false, update: false, delete: false },
+    viewer: { read: false, create: false, update: false, delete: false },
+    // create:false — only the devSeed action mints fixtures. delete:'own' lets
+    // a developer clear their own without an admin round-trip.
+    member: { read: 'own', create: false, update: false, delete: 'own' },
+    admin: { read: true, create: false, update: false, delete: true },
   },
 }
 
@@ -84,7 +166,7 @@ export const swipesSchema: CollectionSchema = {
     // read:'own' is what keeps "who liked me" secret. create:false makes the
     // swipe action the only writer, so the no-self-swipe and reciprocity
     // rules cannot be bypassed by talking to the record room directly.
-    member: { read: 'own', create: false, update: false, delete: false },
+    member: { read: 'own', create: false, update: false, delete: 'own' },
     admin: { read: true, create: false, update: false, delete: true },
   },
 }
@@ -95,9 +177,13 @@ export const matchesSchema: CollectionSchema = {
     participantsColumn,
     { name: 'pairKey', storage: 'text', interpretation: 'plain', required: true },
     { name: 'channelId', storage: 'text', interpretation: 'plain', required: true },
+    // True when the other participant is a dev-profile fixture rather than a
+    // real user. The UI resolves their identity from `dev-profiles` and hides
+    // the match entirely when developer mode is off.
+    { name: 'synthetic', storage: 'number', interpretation: { kind: 'boolean' } },
   ],
   collaboratorsField: 'participants',
-  // pairKey is the sorted "a:b" id pair, so a reciprocal like can only ever
+  // pairKey is the sorted "a::b" id pair, so a reciprocal like can only ever
   // produce one match row even if both sides land at the same instant.
   uniqueOn: ['pairKey'],
   permissions: {
@@ -131,7 +217,20 @@ export const channelsSchema: CollectionSchema = {
 
 export const messagesSchema: CollectionSchema = {
   ...MESSAGES_SCHEMA,
-  columns: [...MESSAGES_SCHEMA.columns, participantsColumn],
+  columns: [
+    ...MESSAGES_SCHEMA.columns,
+    participantsColumn,
+    /**
+     * Who the message is *from*, for display.
+     *
+     * Distinct from the SDK's `authorId`, which is `userBound` and therefore
+     * always the authenticated account that wrote the row. For a developer-mode
+     * AI reply those differ: `authorId` stays the developer (an honest audit
+     * trail — their account's request created it) while `senderId` is the
+     * fixture profile the message is attributed to in the UI.
+     */
+    { name: 'senderId', storage: 'text', interpretation: 'plain', required: true },
+  ],
   collaboratorsField: 'participants',
   permissions: {
     '*': { read: false, create: false, update: false, delete: false },
@@ -140,6 +239,24 @@ export const messagesSchema: CollectionSchema = {
     // exists before writing, so "you can only message a match" is enforced on
     // the server rather than by which buttons we render.
     member: { read: 'collaborator', create: false, update: false, delete: 'own' },
+    admin: { read: true, create: false, update: false, delete: true },
+  },
+}
+
+/**
+ * Read receipts, scoped to their owner.
+ *
+ * The SDK default is `member: { read: true }`, which would publish "when did
+ * this person last open our chat" to every signed-in user. Only you need to
+ * see your own cursor, so this is `read: 'own'`. Writes stay direct — `userId`
+ * is `userBound`, so a client can only ever move its own marker.
+ */
+export const readReceiptsSchema: CollectionSchema = {
+  ...READ_RECEIPTS_SCHEMA,
+  permissions: {
+    '*': { read: false, create: false, update: false, delete: false },
+    viewer: { read: false, create: false, update: false, delete: false },
+    member: { read: 'own', create: true, update: 'own', delete: 'own' },
     admin: { read: true, create: false, update: false, delete: true },
   },
 }
