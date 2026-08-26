@@ -95,10 +95,15 @@ test.describe('developer mode', () => {
     // "50 / 50" exactly. Overshoot ("95 / 50") would fail this, and the race
     // test below pins the number down through the action itself.
 
-    // --- seeding alone creates no matches ------------------------------------
-    // A match means both sides swiped right. Fixtures are not pre-matched.
+    // --- seeding alone creates no fixture matches ---------------------------
+    // A match means both sides swiped right, so seeding must not manufacture
+    // any. Asserted on the AI badge rather than an empty list: this account
+    // may legitimately hold real matches from the other specs.
     await alex.page.goto('/matches')
-    await expect(alex.page.getByTestId('matches-empty')).toBeVisible({ timeout: 20_000 })
+    await expect(
+      alex.page.getByTestId('matches-list').or(alex.page.getByTestId('matches-empty')),
+    ).toBeVisible({ timeout: 20_000 })
+    await expect(alex.page.getByText('AI', { exact: true })).toHaveCount(0)
 
     // --- swiping right is what produces one ----------------------------------
     await alex.page.goto('/discover')
