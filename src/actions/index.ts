@@ -112,6 +112,52 @@ function fail(error: string): ActionResult {
   return { success: false, error }
 }
 
+/**
+ * Groq model used for developer-mode replies when GROQ_MODEL is unset.
+ *
+ * Chosen empirically: the `gpt-oss` models on Groq are reasoning models that
+ * spend the token budget before emitting content, so a short-reply prompt came
+ * back empty or cut off. This one answers in character in about a second.
+ * Groq retires ids periodically — override with GROQ_MODEL when it goes.
+ */
+const DEFAULT_GROQ_MODEL = 'qwen/qwen3.8-27b'
+
+/**
+ * Strip anything the model wraps around its actual message.
+ *
+ * Reasoning-style models sometimes emit a `<think>` block, and some wrap the
+ * reply in quotes. Neither belongs in a chat bubble.
+ */
+/**
+ * Assemble the chat request, guaranteeing at least one user-role turn.
+ *
+ * Several providers template the conversation and reject a request that has
+ * no user message — Groq answers 400 "No user query found in messages". That
+ * happens whenever the fixture is asked to speak into an empty conversation,
+ * so instead of failing, hand it the situation and let it open.
+ */
+function buildMessages(
+  system: string,
+  turns: Array<{ role: 'user' | 'assistant'; content: string }>,
+): Array<{ role: string; content: string }> {
+  const head = [{ role: 'system', content: system }, ...turns]
+  if (turns.some((turn) => turn.role === 'user')) return head
+  return [
+    ...head,
+    {
+      role: 'user',
+      content: '(They opened the chat but have not said anything yet. Send the first message.)',
+    },
+  ]
+}
+
+function sanitizeReply(raw: string): string {
+  return raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^\s*["'“”]+|["'“”]+\s*$/g, '')
+    .trim()
+}
+
 /** Both sides have to want each other's gender for a profile to be shown. */
 function mutuallyCompatible(
   a: { gender: Gender; interestedIn: Gender[] | string },
@@ -653,16 +699,21 @@ const devReply: ActionHandler<Env> = async ({ userId, params, tools, env }) => {
     'Defend your hot take, tease them, and ask something back sometimes.',
   ].join('\n')
 
+  const model = env.GROQ_MODEL ?? DEFAULT_GROQ_MODEL
+
   let reply: string
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
-        max_tokens: 120,
+        model,
+        // Roomy relative to the two-sentence reply we ask for: some models
+        // spend part of the budget on reasoning tokens before any content,
+        // and a tight cap returns an empty or truncated message.
+        max_tokens: 200,
         temperature: 0.9,
-        messages: [{ role: 'system', content: system }, ...turns],
+        messages: buildMessages(system, turns),
       }),
     })
 
@@ -670,13 +721,25 @@ const devReply: ActionHandler<Env> = async ({ userId, params, tools, env }) => {
       // The body can carry the provider's reason; the key is never in it.
       const detail = await res.text().catch(() => '')
       console.error(`[devReply] groq ${res.status}: ${detail.slice(0, 300)}`)
-      return fail(`The AI did not answer (${res.status}). Check GROQ_API_KEY and GROQ_MODEL.`)
+      // Distinguish the two failures that actually happen, because the remedy
+      // differs. Groq retires model ids, and a stale one answers 404 — which
+      // reads as "broken key" unless it is named.
+      if (res.status === 404) {
+        return fail(
+          `The model "${model}" was not found. Groq retires model ids; set a current one with ` +
+            '`deepspace secrets set GROQ_MODEL=<id>` (list them at /openai/v1/models).',
+        )
+      }
+      if (res.status === 401 || res.status === 403) {
+        return fail('Groq rejected the API key. Check GROQ_API_KEY.')
+      }
+      return fail(`The AI did not answer (${res.status}).`)
     }
 
     const body = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>
     }
-    reply = body.choices?.[0]?.message?.content?.trim() ?? ''
+    reply = sanitizeReply(body.choices?.[0]?.message?.content ?? '')
   } catch (err) {
     console.error(`[devReply] groq request failed: ${err instanceof Error ? err.message : err}`)
     return fail('Could not reach the AI provider.')

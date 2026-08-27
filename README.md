@@ -63,7 +63,13 @@ npx deepspace secrets pull        # refresh the local .dev.vars cache
 npx deepspace deploy
 ```
 
-Optionally `GROQ_MODEL` overrides the default (`llama-3.3-70b-versatile`).
+Optionally `GROQ_MODEL` overrides the default, `qwen/qwen3.8-27b`. That
+default was chosen by testing: Groq's `gpt-oss` models are reasoning models
+that spend the token budget before emitting content, so a short-reply prompt
+came back empty or truncated. **Groq retires model ids** — when the default
+stops working `devReply` says so by name and points at `GROQ_MODEL`; list
+current ids from `https://api.groq.com/openai/v1/models`.
+
 Without the key everything else works and `devReply` fails closed with a
 message saying what to set. Secrets belong in the store, never in `.env` or a
 committed file — the worker does not read `.env` at all.

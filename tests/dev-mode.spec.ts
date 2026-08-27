@@ -281,6 +281,77 @@ test.describe('developer mode', () => {
     await callAction(alex.page, 'setDevMode', { enabled: false })
   })
 
+  /**
+   * The AI reply, end to end against the real provider.
+   *
+   * Skips cleanly when no GROQ_API_KEY is configured for the environment, so
+   * a local run without one still passes; when a key is present this is the
+   * only test that proves the fixture actually answers.
+   */
+  test('a fixture answers with a generated reply', async ({ users }) => {
+    const [alex] = await users(['Alex'])
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+
+    await callAction(alex.page, 'setDevMode', { enabled: true })
+    await callAction(alex.page, 'devReset', {})
+    for (let i = 0; i < 40; i++) {
+      const r = await callAction(alex.page, 'devSeed', {})
+      if (!r.body.success || r.body.data.done) break
+    }
+
+    // Earn a match, then talk to it.
+    await alex.page.goto('/discover')
+    await expect(alex.page.getByTestId('discovery-card')).toBeVisible({ timeout: 20_000 })
+    let channelId: string | null = null
+    for (let i = 0; i < 14 && !channelId; i++) {
+      if ((await alex.page.getByTestId('discovery-card').count()) === 0) break
+      await alex.page.getByTestId('like-button').click()
+      await alex.page.waitForTimeout(900)
+      if ((await alex.page.getByTestId('match-modal').count()) > 0) {
+        await alex.page.getByTestId('match-message-button').click()
+        await alex.page.waitForURL(/\/messages\/.+/, { timeout: 20_000 })
+        channelId = alex.page.url().split('/messages/')[1]
+      }
+    }
+    expect(channelId).toBeTruthy()
+
+    // Real usage: the person speaks first, then the fixture answers. (The
+    // action also handles an empty conversation now — that is what surfaced
+    // Groq's "No user query found in messages" 400.)
+    const sent = await callAction(alex.page, 'sendMessage', {
+      channelId,
+      content: 'setlists should be posted in advance, im not gambling my friday',
+    })
+    expect(sent.body.success).toBe(true)
+
+    const probe = await callAction(alex.page, 'devReply', { channelId })
+    // Skip only for a genuinely unconfigured environment. An earlier version
+    // matched /GROQ_API_KEY/, which also matched the "model not found" error
+    // and silently skipped a real failure.
+    test.skip(
+      !probe.body.success && /No GROQ_API_KEY is configured/.test(String(probe.body.error)),
+      'No GROQ_API_KEY configured for this environment',
+    )
+
+    expect(probe.body.success).toBe(true)
+    expect(String(probe.body.data.content).trim().length).toBeGreaterThan(0)
+
+    // And it lands in the conversation, attributed to the fixture rather than
+    // to the developer's own account.
+    await expect(alex.page.getByTestId('message-list')).toContainText(
+      String(probe.body.data.content).slice(0, 24),
+      { timeout: 20_000 },
+    )
+    // The reply is attributed to the fixture, so it renders on the left. The
+    // user's own line is on the right — one of each.
+    const list = alex.page.getByTestId('message-list')
+    await expect(list.locator('li.items-start')).toHaveCount(1)
+    await expect(list.locator('li.items-end')).toHaveCount(1)
+
+    await callAction(alex.page, 'devReset', {})
+    await callAction(alex.page, 'setDevMode', { enabled: false })
+  })
+
   test('devReply refuses a conversation with a real person', async ({ users }) => {
     const [alex, maya] = await users(['Alex', 'Maya'])
     await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
