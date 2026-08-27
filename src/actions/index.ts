@@ -32,6 +32,7 @@ import {
   HOT_TAKE_MAX,
   MAX_AGE,
   MIN_AGE,
+  TARGET_GONE,
   type Gender,
 } from '../schemas/hottake-schemas'
 
@@ -228,8 +229,10 @@ const swipe: ActionHandler<Env> = async ({ userId, params, tools }) => {
   } else {
     const fixture = await tools.get<DevProfileRow>('dev-profiles', targetId)
     // tools.get bypasses RBAC, so ownership is checked here rather than assumed.
-    if (!fixture.success || !fixture.data.record) return fail('That profile no longer exists')
-    if (fixture.data.record.data.ownerId !== userId) return fail('That profile no longer exists')
+    // Both branches answer identically: a fixture belonging to someone else
+    // must be indistinguishable from one that does not exist.
+    if (!fixture.success || !fixture.data.record) return fail(TARGET_GONE)
+    if (fixture.data.record.data.ownerId !== userId) return fail(TARGET_GONE)
     synthetic = true
     targetGenderCheck = fixture.data.record.data
   }
@@ -417,14 +420,54 @@ const devSeed: ActionHandler<Env> = async ({ userId, tools }) => {
   })
   if (!existing.success) return fail(existing.error)
 
-  // Pass 1 - repair. Anything not addressable by a unique in-range slot is
-  // junk from before the constraint existed, or from a race that predates it.
+  // Pass 0 - sweep orphans. A synthetic match whose other participant is no
+  // longer one of this user's fixtures is leftover state: either the fixture
+  // was replaced, or the match predates the rule that a match requires a
+  // right-swipe from both sides. Either way it should not sit in the list.
+  const liveFixtureIds = new Set(existing.data.records.map((row) => row.recordId))
+  const allMatches = await tools.query<MatchRow>('matches', { limit: 500 })
+  if (allMatches.success) {
+    const orphans = allMatches.data.records.filter((match) => {
+      if (!isTruthy(match.data.synthetic)) return false
+      const participants = readJsonArray(match.data.participants)
+      if (!participants.includes(userId)) return false
+      return participants.some((id) => id !== userId && !liveFixtureIds.has(id))
+    })
+    if (orphans.length > 0) {
+      for (const match of orphans.slice(0, 5)) {
+        await tools.deleteWhere('messages', { channelId: match.data.channelId }, 500)
+        await tools.remove('channels', match.data.channelId)
+        await tools.remove('matches', match.recordId)
+        for (const id of readJsonArray(match.data.participants)) {
+          if (id !== userId) {
+            await tools.deleteWhere('swipes', { swiperId: userId, targetId: id }, 10)
+          }
+        }
+      }
+      return {
+        success: true,
+        data: {
+          seeded: liveFixtureIds.size,
+          target: DEV_PROFILE_COUNT,
+          repaired: Math.min(5, orphans.length),
+          done: false,
+        },
+      }
+    }
+  }
+
+  // Pass 1 - repair. A fixture is junk when it cannot be addressed by a
+  // unique in-range slot (from before the constraint existed, or a race that
+  // predates it), or when it no longer fits the preferences on the profile —
+  // changing who you want to see should change who is in the deck, not leave
+  // people you did not ask for sitting in it.
   const bySlot = new Map<number, string>()
   const junk: string[] = []
   for (const row of existing.data.records) {
     const slot = Number(row.data.slot)
-    const valid = Number.isInteger(slot) && slot >= 0 && slot < DEV_PROFILE_COUNT
-    if (!valid || bySlot.has(slot)) {
+    const addressable = Number.isInteger(slot) && slot >= 0 && slot < DEV_PROFILE_COUNT
+    const wanted = mutuallyCompatible(mine.data, row.data)
+    if (!addressable || bySlot.has(slot) || !wanted) {
       junk.push(row.recordId)
       continue
     }
@@ -501,15 +544,18 @@ const devSeed: ActionHandler<Env> = async ({ userId, tools }) => {
 const devReset: ActionHandler<Env> = async ({ userId, tools }) => {
   const fixtures = await tools.query<DevProfileRow>('dev-profiles', {
     where: { ownerId: userId },
-    limit: DEV_PROFILE_COUNT * 2,
+    limit: 500,
   })
   if (!fixtures.success) return fail(fixtures.error)
-  const fixtureIds = new Set(fixtures.data.records.map((f) => f.recordId))
 
-  // Only synthetic matches, and only ones this caller participates in — the
-  // query is already participant-scoped, but the synthetic flag is the guard
-  // that keeps a real conversation out of the blast radius.
-  const matches = await tools.query<MatchRow>('matches', { limit: 200 })
+  // Two conditions decide what to remove: the match is flagged `synthetic`,
+  // and this caller is a participant. That is already proof it is developer
+  // data belonging to them.
+  //
+  // An earlier version also required the fixture to still exist. That was a
+  // bug: deleting a fixture orphaned its match, and the next reset skipped
+  // the orphan because its fixture was gone — so Clear could never clear it.
+  const matches = await tools.query<MatchRow>('matches', { limit: 500 })
   if (!matches.success) return fail(matches.error)
 
   let removedMatches = 0
@@ -517,11 +563,15 @@ const devReset: ActionHandler<Env> = async ({ userId, tools }) => {
     if (!isTruthy(match.data.synthetic)) continue
     const participants = readJsonArray(match.data.participants)
     if (!participants.includes(userId)) continue
-    if (!participants.some((id) => fixtureIds.has(id))) continue
 
     await tools.deleteWhere('messages', { channelId: match.data.channelId }, 500)
     await tools.remove('channels', match.data.channelId)
     await tools.remove('matches', match.recordId)
+    // The other participant is a fixture id; drop the swipe that produced it
+    // so the person reappears in the stack after a reseed.
+    for (const id of participants) {
+      if (id !== userId) await tools.deleteWhere('swipes', { swiperId: userId, targetId: id }, 10)
+    }
     removedMatches++
   }
 
@@ -562,9 +612,9 @@ const devReply: ActionHandler<Env> = async ({ userId, params, tools, env }) => {
   if (!fixtureId) return fail('That conversation has no other participant')
 
   const fixture = await tools.get<DevProfileRow>('dev-profiles', fixtureId)
-  if (!fixture.success || !fixture.data.record) return fail('That profile no longer exists')
+  if (!fixture.success || !fixture.data.record) return fail(TARGET_GONE)
   // RBAC is off in here: prove the caller owns this fixture before speaking as it.
-  if (fixture.data.record.data.ownerId !== userId) return fail('That profile no longer exists')
+  if (fixture.data.record.data.ownerId !== userId) return fail(TARGET_GONE)
   const persona = fixture.data.record.data
 
   const apiKey = env.GROQ_API_KEY

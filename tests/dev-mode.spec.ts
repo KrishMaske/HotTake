@@ -11,6 +11,7 @@
 
 import { test, expect } from 'deepspace/testing'
 import type { Page } from '@playwright/test'
+import { TARGET_GONE } from '../src/schemas/hottake-schemas'
 
 const PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -169,6 +170,80 @@ test.describe('developer mode', () => {
     await callAction(alex.page, 'setDevMode', { enabled: false })
   })
 
+  /**
+   * Regression: a synthetic match must not outlive the fixture it belongs to.
+   *
+   * `devReset` used to skip a match whose fixture had already been deleted,
+   * because it required the fixture to still exist before it would clean up.
+   * Deleting a fixture therefore orphaned its match permanently — Clear could
+   * never clear it. Reproduced here by changing preferences, which makes the
+   * existing fixtures stale and forces them to be replaced.
+   */
+  test('a replaced fixture does not strand its match', async ({ users }) => {
+    const [alex] = await users(['Alex'])
+    await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
+
+    await callAction(alex.page, 'setDevMode', { enabled: true })
+    await callAction(alex.page, 'devReset', {})
+
+    const setPrefs = (interestedIn: string[]) =>
+      callAction(alex.page, 'saveProfile', {
+        displayName: 'Alex',
+        age: 21,
+        hotTake: 'Iced coffee is better in winter.',
+        photoKey: 'existing',
+        gender: 'man',
+        interestedIn,
+      })
+
+    const drain = async () => {
+      for (let i = 0; i < 60; i++) {
+        const r = await callAction(alex.page, 'devSeed', {})
+        if (!r.body.success || r.body.data.done) return r
+      }
+      return null
+    }
+
+    // Seed a deck of women, then earn a match the honest way.
+    await setPrefs(['woman'])
+    await drain()
+    await alex.page.goto('/discover')
+    await expect(alex.page.getByTestId('discovery-card')).toBeVisible({ timeout: 20_000 })
+
+    let matched = false
+    for (let i = 0; i < 14 && !matched; i++) {
+      if ((await alex.page.getByTestId('discovery-card').count()) === 0) break
+      await alex.page.getByTestId('like-button').click()
+      await alex.page.waitForTimeout(900)
+      if ((await alex.page.getByTestId('match-modal').count()) > 0) {
+        matched = true
+        await alex.page.getByText('Keep swiping').click()
+      }
+    }
+    expect(matched).toBe(true)
+
+    // Flip preferences. Every existing fixture is now stale, so the next seed
+    // replaces the whole deck — including the one behind that match.
+    await setPrefs(['man'])
+    await drain()
+
+    // The match must be gone with its fixture, not left behind as an orphan.
+    await alex.page.goto('/matches')
+    await expect(
+      alex.page.getByTestId('matches-list').or(alex.page.getByTestId('matches-empty')),
+    ).toBeVisible({ timeout: 20_000 })
+    await expect(alex.page.getByText('AI', { exact: true })).toHaveCount(0, { timeout: 20_000 })
+
+    // And the new deck honours the new preference.
+    await alex.page.goto('/discover')
+    await expect(alex.page.getByTestId('discovery-card')).toBeVisible({ timeout: 20_000 })
+    await expect(alex.page.getByTestId('card-gender')).toHaveText('Man')
+
+    await callAction(alex.page, 'devReset', {})
+    await setPrefs(['woman', 'man', 'nonbinary'])
+    await callAction(alex.page, 'setDevMode', { enabled: false })
+  })
+
   test('fixtures belong to their developer and nobody else', async ({ users }) => {
     const [alex, maya] = await users(['Alex', 'Maya'])
     await ensureProfile(alex.page, 'Alex', '21', 'Iced coffee is better in winter.', 'man')
@@ -192,7 +267,7 @@ test.describe('developer mode', () => {
       direction: 'like',
     })
     expect(intrusion.body.success).toBe(false)
-    expect(intrusion.body.error).toContain('no longer exists')
+    expect(intrusion.body.error).toBe(TARGET_GONE)
 
     // And Maya's own discovery contains no fixtures at all.
     await maya.page.goto('/discover')

@@ -57,6 +57,17 @@ export const GENDER_PLURALS: Record<Gender, string> = {
 export const DEV_PROFILE_COUNT = 50
 
 /**
+ * Refusal used when a swipe target has disappeared between the client
+ * rendering it and the server being asked about it — a fixture replaced by a
+ * reseed, or a profile deleted mid-session.
+ *
+ * Shared rather than duplicated: the client drops the card from the stack on
+ * exactly this message, and a drifting string would silently strand the card
+ * instead.
+ */
+export const TARGET_GONE = 'That profile is no longer available'
+
+/**
  * Shared by matches/channels/messages: the two participant ids allowed to see
  * the row. `collaboratorsField` points the RBAC layer at it, and
  * `'collaborator'` resolves to "owner OR listed here".

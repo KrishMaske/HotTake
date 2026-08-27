@@ -25,6 +25,7 @@ import {
   type SwipeResult,
 } from '../../../lib/hottake'
 import { useDiscoveryStack, useMyProfile, usePhotoUrl } from '../../../lib/use-hottake'
+import { GENDER_LABELS, TARGET_GONE } from '../../../schemas/hottake-schemas'
 import { cn } from '../../../lib/utils'
 
 type Decision = 'like' | 'pass'
@@ -71,10 +72,17 @@ export default function Discover() {
           setMatch({ person, channelId: result.channelId })
         }
       } catch (err) {
-        toastError(
-          'That swipe did not land',
-          err instanceof ActionError ? err.message : 'Try again.',
-        )
+        // A target that no longer exists is not a failed swipe — the stack was
+        // stale (a reseed replaced the fixture, or the profile was deleted).
+        // Drop the card instead of leaving the user stuck on it.
+        if (err instanceof ActionError && err.message === TARGET_GONE) {
+          setJustSwiped((prev) => [...prev, person.id])
+        } else {
+          toastError(
+            'That swipe did not land',
+            err instanceof ActionError ? err.message : 'Try again.',
+          )
+        }
       } finally {
         setLeaving(null)
         setPending(false)
@@ -276,16 +284,24 @@ function ProfileCard({
           >
             {person.displayName}, {person.age}
           </h2>
-          {/* Why the ranker put this card here. Ordering is otherwise
-              invisible, and an unexplained "algorithm" is just noise. */}
-          {person.rankReason && (
-            <p
-              className="mt-1 text-xs font-medium text-white/75 drop-shadow"
-              data-testid={decorative ? undefined : 'card-reason'}
-            >
-              {person.rankReason}
-            </p>
-          )}
+          {/* Gender, then why the ranker put this card here. Ordering is
+              otherwise invisible, and an unexplained "algorithm" is just noise. */}
+          <p
+            className="mt-1 text-xs font-medium text-white/75 drop-shadow"
+            data-testid={decorative ? undefined : 'card-meta'}
+          >
+            <span data-testid={decorative ? undefined : 'card-gender'}>
+              {GENDER_LABELS[person.gender]}
+            </span>
+            {person.rankReason && (
+              <>
+                {' · '}
+                <span data-testid={decorative ? undefined : 'card-reason'}>
+                  {person.rankReason}
+                </span>
+              </>
+            )}
+          </p>
         </div>
       </div>
 
