@@ -55,6 +55,27 @@ export default function DevPanel({ devMode }: { devMode: boolean }) {
     }
   }
 
+  /**
+   * One seed batch, retried on a transient failure.
+   *
+   * Seeding is a loop of small writes, and a single blip — an edge 403 during
+   * a deploy's propagation window, a dropped connection — would otherwise
+   * abandon a half-built deck and report failure. Each attempt is idempotent
+   * (work is chosen from the missing slots), so retrying is safe.
+   */
+  async function seedOnce(): Promise<SeedResult> {
+    let lastError: unknown
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await callAction<SeedResult>('devSeed', {})
+      } catch (err) {
+        lastError = err
+        await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)))
+      }
+    }
+    throw lastError
+  }
+
   async function seed() {
     if (running.current) return
     running.current = true
@@ -65,7 +86,7 @@ export default function DevPanel({ devMode }: { devMode: boolean }) {
       // Bounded: enough calls to repair a badly-out-of-shape set and then
       // fill it, but never an unbounded spin if the server stops advancing.
       for (let call = 0; call < 40; call++) {
-        const result = await callAction<SeedResult>('devSeed', {})
+        const result = await seedOnce()
         repaired += result.repaired ?? 0
         setProgress(result.seeded)
         if (result.done) break
